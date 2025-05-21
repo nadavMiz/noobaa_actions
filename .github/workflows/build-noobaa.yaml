@@ -1,0 +1,42 @@
+name: Build Noobaa Image
+# This workflow builds the noobaa image and uploads it as an artifact.
+on: [push, pull_request, workflow_call]
+
+jobs:
+  build-noobaa-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: nadavMiz/noobaa-core
+          path: 'noobaa-core'
+
+      - name: make noobaa image
+        run: |
+          set -x
+          cd ./noobaa-core
+          make test
+
+      - name: create docker artifact
+        run: |
+          docker save --output noobaa.tar noobaa
+          docker save --output noobaa-tester.tar noobaa-tester
+
+      - name: upload noobaa docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: noobaa-image
+          path: noobaa.tar
+          retention-days: "1"
+
+      - name: upload noobaa-tester docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: noobaa-tester
+          path: noobaa-tester.tar
+          retention-days: "1"
