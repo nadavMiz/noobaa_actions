@@ -1,0 +1,47 @@
+name: Run PR Tests
+on: [push, pull_request, workflow_dispatch]
+concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+jobs:
+  build-noobaa-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: nadavMiz/noobaa-core
+          path: 'noobaa-core'
+
+      - name: Check changed files
+        id: changed_files
+        run: |
+          firstCommit='${{ github.event.base_ref }}'
+          lastCommit='${{ github.event.head_ref }}'
+          echo ${firstCommit}
+          echo ${lastCommit}
+          changedFiles=$(git diff --name-only --diff-filter=d "${firstCommit}~1" "${lastCommit}")
+          echo "changed_files=$(cat changed_files.txt)" >> $GITHUB_OUTPUT
+
+      - name: make noobaa image
+        run: make tester
+
+      - name: create docker artifact
+        run: |
+          docker save --output noobaa.tar noobaa
+          docker save --output noobaa-tester.tar noobaa-tester
+
+      - name: upload noobaa docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: noobaa-image
+          path: noobaa.tar
+          retention-days: "1"
+
+      - name: upload noobaa-tester docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: noobaa-tester
+          path: noobaa-tester.tar
+          retention-days: "1"
