@@ -1,0 +1,128 @@
+name: Run PR Tests
+on: [push, pull_request, workflow_dispatch]
+concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+jobs:
+  build-noobaa-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare Tags
+        id: prep
+        run: |
+          DOCKER_BUILDER_IMAGE=rhn-support-nmizrahi/test-test
+          DOCKER_BASE_IMAGE=rhn-support-nmizrahi/test-test1
+          BRANCH=master
+          BUILDER_TAGS="${DOCKER_BUILDER_IMAGE}:${BRANCH}-"
+          BASE_TAGS="${DOCKER_BASE_IMAGE}:${BRANCH}-"
+          EARLIEST_VERSION_PAST=20
+          echo "basetags=${BASE_TAGS}" >> $GITHUB_OUTPUT
+          echo "buildertags=${BUILDER_TAGS}" >> $GITHUB_OUTPUT
+          echo "pull_tries=${EARLIEST_VERSION_PAST}" >> $GITHUB_OUTPUT
+
+      - name: Check changed files
+        id: changed_files
+        uses: tj-actions/changed-files@v44
+
+      - name: Should build noobaa base image
+        id: should_build_base
+        run: |
+          base_files=("package.json", "base.dockerfile")
+          output=false
+          for file in ${{ steps.changed_files.outputs.all_changed_files }}; do
+            if echo $base_files | grep -w -q $file; then
+              echo "File ${file} has changed, building base image."
+              output=true
+              break;
+            fi
+          done
+          echo "should_build=${output}" >> $GITHUB_OUTPUT
+
+      - name: Login to Quay Registry
+        run: |
+          docker login quay.io -u ${{ secrets.GHACTIONQUAYNAME }} -p ${{ secrets.GHACTIONQUAYTOKEN }}            
+
+
+      - name: Pull noobaa-base image
+        id: pull_base_image
+        if: ${{ steps.should_build_base.outputs.should_build == 'false' }}
+        run: |
+          output=false
+          for i in {0..${{steps.prep.outputs.pull_tries}}}
+          do
+            date=$(date -d "${i} days ago" +'%Y%m%d')
+            base_tag="quay.io/${{ steps.prep.outputs.basetags }}${date}"
+            echo ${base_tag}
+            docker pull ${base_tag} || continue
+            echo "Successfully pulled ${base_tag} from quay.io"
+            docker tag ${base_tag} noobaa-base
+            output=true
+            break
+          done
+          echo "pull_succeed=${output}" >> $GITHUB_OUTPUT
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: nadavMiz/noobaa-core
+          path: 'noobaa-core'
+
+      - name: Pull noobaa-builder image
+        id: should_build_builder
+        if: ${{steps.should_build_base.outputs.should_build == 'true' ||
+          steps.pull_base_image.outputs.pull_succeed == 'false'}}
+        run: |
+          echo ${{steps.should_build_base.outputs.should_build}}
+          echo ${{steps.pull_base_image.outputs.pull_succeed}}
+          output=true
+          for i in {0..${{steps.prep.outputs.pull_tries}}}
+          do
+            date=$(date -d "${i} days ago" +'%Y%m%d')
+            builder_tag="quay.io/${{ steps.prep.outputs.buildertags }}${date}"
+            docker pull ${builder_tag} || continue
+            echo "Successfully pulled ${builder_tag} from quay.io"
+            docker tag ${builder_tag} noobaa-builder
+            output=false
+            break
+          done
+          echo "should_build=${output}" >> $GITHUB_OUTPUT 
+
+      - name: Build noobaa-base image
+        if: ${{steps.should_build_base.outputs.should_build == 'true' ||
+          steps.pull_base_image.outputs.pull_succeed == 'false'}}
+        env:
+          DOCKERHUB_OWNER: ${{ secrets.GHACTIONQUAYNAME }}
+        run: |
+          set -x
+          cd ./noobaa-core
+          ${{ steps.should_build_builder.outputs.should_build == 'false' }} && flags="-o builder"
+          make base ${flags}
+
+      - name: Build noobaa image
+        run: | 
+          set -x
+          cd ./noobaa-core
+          make tester -o base
+
+      - name: create docker artifact
+        run: |
+          docker save --output noobaa.tar noobaa
+          docker save --output noobaa-tester.tar noobaa-tester
+
+      - name: Upload noobaa docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: noobaa-image
+          path: noobaa.tar
+          retention-days: "1"
+
+      - name: Upload noobaa-tester docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: noobaa-tester
+          path: noobaa-tester.tar
+          retention-days: "1"
